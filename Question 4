@@ -1,0 +1,247 @@
+# Import libs
+import torch
+from torch import nn
+
+import torchvision
+from torchvision import datasets,models
+
+import torchvision.transforms as transforms
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+import torch.optim as optim
+from torch.optim import lr_scheduler
+
+!pip install torch-lr-scheduler
+
+# Mount datasets from google drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Prepare datasets
+transform = transforms.Compose(
+    [ transforms.Resize((224,224)),
+      transforms.ToTensor(), # convert to 4D-Tensor (R,G,B,batch)
+      transforms.Normalize([0.485,0.456,0.406], [0.229,0.224,0.225])]  # to normalize each channel separately
+)
+
+train_dir = '/content/drive/MyDrive/MY_data/train'
+test_dir = '/content/drive/MyDrive/MY_data/test'
+
+train_data = datasets.ImageFolder(root=train_dir,transform = transform)
+test_data = datasets.ImageFolder(root=test_dir,transform = transform)
+
+class_names = train_data.classes
+class_names
+
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(train_data, batch_size=16, shuffle=True)
+test_dataloader = DataLoader(test_data, batch_size=16, shuffle=False)
+
+# Visualize our dataset
+def show_image(img):
+    img = img / 2 + 0.5     # unnormalize
+    npimg = img.numpy()
+    plt.imshow(np.transpose(npimg, (1, 2, 0)))
+    plt.show()
+
+# get some random training images
+dataiter = iter(train_dataloader)
+images, labels = next(dataiter)
+
+# show images
+show_image(torchvision.utils.make_grid(images))
+# print labels
+print(' '.join('%5s' % class_names[labels[j]] for j in range(16)))
+
+train_imgBatch, train_labelBatch = next(iter(train_dataloader))
+
+train_imgBatch.shape
+
+# Define our model
+class CNNmodel(nn.Module):
+  def __init__(self):
+    super(CNNmodel,self).__init__()
+    self.conv1 = nn.Conv2d(in_channels=3, out_channels=6, kernel_size=5) #220x220x6
+    self.maxpool1 = nn.MaxPool2d(kernel_size=2,stride=2) #110x110x6
+    self.conv2 = nn.Conv2d(6,16,5) #106x106x16
+    self.maxpool2 = nn.MaxPool2d(kernel_size=2,stride=2) #53x53x16
+    self.conv3 = nn.Conv2d(16, 20, 3) #51x51x20
+    self.fc1 = nn.Linear(20*51*51,100)
+    self.fc2 = nn.Linear(100,10)
+    self.relu = nn.ReLU()
+    self.flatten = nn.Flatten()
+    self.batchnorm1 = nn.BatchNorm2d(6)
+    self.batchnorm2 = nn.BatchNorm2d(16)
+    self.dropout = nn.Dropout(0.4) #drop 40% of neurons during training
+
+  def forward(self,x):
+    x = self.conv1(x)
+    x = self.relu(x)
+    x = self.batchnorm1(x)
+    x = self.maxpool1(x)
+    x = self.conv2(x)
+    x = self.batchnorm2(x)
+    x = self.relu(x)
+    x = self.maxpool2(x)
+    x = self.conv3(x)
+    x = self.relu(x)
+    x = self.flatten(x)
+    x = self.fc1(x)
+    x = self.dropout(x)
+    x = self.relu(x)
+    out = self.fc2(x)
+
+    return out
+
+
+model = CNNmodel()
+
+model.to('cuda')
+
+#cross-entropy loss
+loss_fn = nn.CrossEntropyLoss()
+loss_fn.to('cuda')
+optimizer = torch.optim.SGD(model.parameters(),lr=0.1,momentum=0.9)
+
+# Define a exponential learning rate scheduler
+scheduler = lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+
+#EXponential Learning Rate
+lr = []
+
+num_epochs = 10
+for epoch in range(num_epochs):
+    print("Epoch: {}/{}".format(epoch+1, num_epochs))
+
+    model.train(True)
+
+    train_loss = 0.0
+    train_acc = 0.0
+
+    valid_loss = 0.0
+    valid_acc = 0.0
+
+    for inputs, labels in train_dataloader:
+        inputs = inputs.to('cuda')
+        labels = labels.to('cuda')
+
+        optimizer.zero_grad()
+
+        outputs = model(inputs)
+        loss = loss_fn(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        train_loss += loss.item() * inputs.size(0)
+
+        ret, predictions = torch.max(outputs.data, 1)
+        correct_counts = predictions.eq(labels.data.view_as(predictions))
+
+        acc = torch.mean(correct_counts.type(torch.FloatTensor))
+        train_acc += acc.item() * inputs.size(0)
+
+    with torch.no_grad():
+
+      model.train(False)
+
+      for inputs, labels in test_dataloader:
+        inputs = inputs.to('cuda')
+        labels = labels.to('cuda')
+
+        outputs = model(inputs)
+        loss = loss_fn(outputs, labels)
+        valid_loss += loss.item() * inputs.size(0)
+
+        ret, predictions = torch.max(outputs.data, 1)
+        correct_counts = predictions.eq(labels.data.view_as(predictions))
+        acc = torch.mean(correct_counts.type(torch.FloatTensor))
+        valid_acc += acc.item() * inputs.size(0)
+
+    avg_train_loss = train_loss / len(train_dataloader.dataset)
+    avg_train_acc = train_acc / len(train_dataloader.dataset)
+
+    avg_test_loss = valid_loss / len(test_dataloader.dataset)
+    avg_test_acc = valid_acc / len(test_dataloader.dataset)
+
+    # Update the learning rate
+    scheduler.step()
+    lr.append(scheduler.get_last_lr())
+
+    # Print the learning rate value
+
+    #print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}, Accuracy: {acc.item():.4f}%')
+    print("Epoch : {:03d}, Training: Accuracy: {:.4f}%, \n\t\tValidation : Accuracy: {:.4f}%".format(epoch, avg_train_acc * 100,  avg_test_acc * 100))
+
+print('Finished Training')
+
+
+# Learning rate scheduling: Step decay
+scheduler = optim.lr_scheduler.StepLR(optimizer,step_size=2, gamma=0.9)
+
+# Learning rate scheduling: Step decay
+num_epochs = 10
+for epoch in range(num_epochs):
+    print("Epoch: {}/{}".format(epoch+1, num_epochs))
+
+    model.train()
+
+    train_loss = 0.0
+    train_acc = 0.0
+
+    valid_loss = 0.0
+    valid_acc = 0.0
+
+    for inputs, labels in train_dataloader:
+        inputs = inputs.to('cuda')
+        labels = labels.to('cuda')
+
+        optimizer.zero_grad()
+
+        outputs = model(inputs)
+        loss = loss_fn(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        train_loss += loss.item() * inputs.size(0)
+
+        ret, predictions = torch.max(outputs.data, 1)
+        correct_counts = predictions.eq(labels.data.view_as(predictions))
+
+        acc = torch.mean(correct_counts.type(torch.FloatTensor))
+        train_acc += acc.item() * inputs.size(0)
+
+    with torch.no_grad():
+
+      model.eval()
+
+      for inputs, labels in test_dataloader:
+        inputs = inputs.to('cuda')
+        labels = labels.to('cuda')
+
+        outputs = model(inputs)
+        loss = loss_fn(outputs, labels)
+        valid_loss += loss.item() * inputs.size(0)
+
+        ret, predictions = torch.max(outputs.data, 1)
+        correct_counts = predictions.eq(labels.data.view_as(predictions))
+        acc = torch.mean(correct_counts.type(torch.FloatTensor))
+        valid_acc += acc.item() * inputs.size(0)
+
+    avg_train_loss = train_loss / len(train_dataloader.dataset)
+    avg_train_acc = train_acc / len(train_dataloader.dataset)
+
+    avg_test_loss = valid_loss / len(test_dataloader.dataset)
+    avg_test_acc = valid_acc / len(test_dataloader.dataset)
+
+    # Update the learning rate
+    scheduler.step()
+
+    # Print the learning rate value
+    lr = scheduler.get_last_lr()
+    #print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}, Accuracy: {acc.item():.4f}%')
+    print("Epoch : {:03d}, Training: Accuracy: {:.4f}%, \n\t\tValidation : Accuracy: {:.4f}%".format(epoch, avg_train_acc * 100, avg_test_acc * 100))
+
+print('Finished Training')
